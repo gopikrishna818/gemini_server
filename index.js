@@ -19,7 +19,7 @@ if (!process.env.GOOGLE_GEMINI_API_KEYS) {
 const keys = process.env.GOOGLE_GEMINI_API_KEYS.split(',').map(k => k.trim());
 const alertedKeys = new Set();
 
-const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
 async function callGeminiAPI(prompt, keyIndex = 0) {
   if (keyIndex >= keys.length) {
