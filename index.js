@@ -2,6 +2,7 @@ const express = require('express');
 const dotenv = require('dotenv');
 const axios = require('axios');
 const { sendAlert } = require('./utils/email');
+const { n8nRetellWebhookHandler } = require('./n8n-retell-webhook');
 
 // Load environment variables
 dotenv.config();
@@ -20,6 +21,7 @@ const keys = process.env.GOOGLE_GEMINI_API_KEYS.split(',').map(k => k.trim());
 const alertedKeys = new Set();
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 
 async function callGeminiAPI(prompt, keyIndex = 0) {
   if (keyIndex >= keys.length) {
@@ -30,6 +32,10 @@ async function callGeminiAPI(prompt, keyIndex = 0) {
   console.log(`🔁 Trying Gemini key #${keyIndex + 1}`);
 
   try {
+    // Add timeout protection (8 seconds)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
     const res = await axios.post(
       `${GEMINI_ENDPOINT}?key=${key}`,
       {
@@ -38,22 +44,32 @@ async function callGeminiAPI(prompt, keyIndex = 0) {
       {
         headers: {
           'Content-Type': 'application/json'
-        }
+        },
+        signal: controller.signal
       }
     );
 
+    clearTimeout(timeout);
     console.log("✅ Gemini response received");
     return res.data;
   } catch (err) {
-    if (err.response) {
-      console.error(`❌ Error ${err.response.status}:`, err.response.data);
+    if (err.name === 'AbortError' || err.code === 'ECONNABORTED') {
+      console.error(`❌ Request timeout for key #${keyIndex + 1}`);
+      return callGeminiAPI(prompt, keyIndex + 1);
+    }
 
-      if (err.response.status === 429) {
+    if (err.response) {
+      const status = err.response.status;
+      console.error(`❌ Error ${status}:`, err.response.data);
+
+      // Retry on all retryable status codes
+      if (RETRYABLE_STATUS_CODES.includes(status)) {
         const keyNumber = keyIndex + 1;
         if ([5, 8, 10].includes(keyNumber) && !alertedKeys.has(keyNumber)) {
           await sendAlert(keyNumber);
           alertedKeys.add(keyNumber);
         }
+        console.warn(`Key ${keyNumber} failed with ${status}, retrying...`);
         return callGeminiAPI(prompt, keyIndex + 1);
       }
     } else {
@@ -77,6 +93,10 @@ app.post('/generate', async (req, res) => {
     const geminiResponse = await callGeminiAPI(prompt);
     res.json({ response: geminiResponse });
   } catch (err) {
+    // Check if all keys were exhausted
+    if (err.message === 'All Gemini API keys exhausted.') {
+      return res.status(503).json({ error: 'All Gemini API keys exhausted or unavailable' });
+    }
     res.status(500).json({ error: err.message || 'Unknown error' });
   }
 });
@@ -85,6 +105,9 @@ app.post('/generate', async (req, res) => {
 app.get('/', (req, res) => {
   res.send('✅ Gemini Prompt Server is running. Use POST /generate to interact.');
 });
+
+// 📞 n8n to Retell webhook endpoint
+app.post('/n8n/retell/call', n8nRetellWebhookHandler);
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
