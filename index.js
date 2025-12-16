@@ -31,11 +31,11 @@ async function callGeminiAPI(prompt, keyIndex = 0) {
   const key = keys[keyIndex];
   console.log(`🔁 Trying Gemini key #${keyIndex + 1}`);
 
-  try {
-    // Add timeout protection (8 seconds)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+  // Add timeout protection (8 seconds)
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
 
+  try {
     const res = await axios.post(
       `${GEMINI_ENDPOINT}?key=${key}`,
       {
@@ -53,6 +53,8 @@ async function callGeminiAPI(prompt, keyIndex = 0) {
     console.log("✅ Gemini response received");
     return res.data;
   } catch (err) {
+    clearTimeout(timeout); // Always clear timeout on error
+    
     if (err.name === 'AbortError' || err.code === 'ECONNABORTED') {
       console.error(`❌ Request timeout for key #${keyIndex + 1}`);
       return callGeminiAPI(prompt, keyIndex + 1);
