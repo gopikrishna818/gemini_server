@@ -31,9 +31,9 @@ async function callGeminiAPI(prompt, keyIndex = 0) {
   const key = keys[keyIndex];
   console.log(`🔁 Trying Gemini key #${keyIndex + 1}`);
 
-  // Add timeout protection (8 seconds)
+  // Add timeout protection (25 seconds - well under Vercel's 30s limit)
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  const timeout = setTimeout(() => controller.abort(), 25000);
 
   try {
     const res = await axios.post(
