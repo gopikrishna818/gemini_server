@@ -35,8 +35,8 @@ function delay(ms) {
 async function callGeminiAPI(prompt, keyIndex = currentKeyIndex, attemptedInCycle = 0) {
   // If we've tried all keys in this cycle, wait and retry from the beginning
   if (attemptedInCycle >= keys.length) {
-    console.log(`⏳ All ${keys.length} keys exhausted. Waiting 5 seconds before retrying...`);
-    await delay(5000);
+    console.log(`⏳ All ${keys.length} keys exhausted. Waiting 3 seconds before retrying...`);
+    await delay(3000);
     attemptedInCycle = 0; // Reset cycle counter
     keyIndex = 0; // Start from first key again
   }
@@ -46,7 +46,9 @@ async function callGeminiAPI(prompt, keyIndex = currentKeyIndex, attemptedInCycl
   console.log(`🔑 Using Gemini API Key #${keyNumber} (Attempt ${attemptedInCycle + 1}/${keys.length})`);
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 8000);
+  // Vercel Hobby: 10s, Pro: 60s - Use 50s to be safe for Pro, or 9s for Hobby
+  // Set to 50s and let Vercel handle the hard timeout
+  const timeout = setTimeout(() => controller.abort(), 50000);
 
   try {
     const res = await axios.post(
@@ -58,7 +60,8 @@ async function callGeminiAPI(prompt, keyIndex = currentKeyIndex, attemptedInCycl
         headers: {
           'Content-Type': 'application/json'
         },
-        signal: controller.signal
+        signal: controller.signal,
+        timeout: 50000 // Axios timeout
       }
     );
 
