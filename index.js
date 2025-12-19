@@ -2,7 +2,6 @@ const express = require('express');
 const dotenv = require('dotenv');
 const axios = require('axios');
 const { sendAlert } = require('./utils/email');
-const { n8nRetellWebhookHandler } = require('./n8n-retell-webhook');
 
 // Load environment variables
 dotenv.config();
@@ -18,22 +17,36 @@ if (!process.env.GOOGLE_GEMINI_API_KEYS) {
 }
 
 const keys = process.env.GOOGLE_GEMINI_API_KEYS.split(',').map(k => k.trim());
-const alertedKeys = new Set();
 
 const GEMINI_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 const RETRYABLE_STATUS_CODES = [429, 500, 502, 503, 504];
 
-async function callGeminiAPI(prompt, keyIndex = 0) {
-  if (keyIndex >= keys.length) {
-    throw new Error('All Gemini API keys exhausted.');
+// Track which key to use next (persists across requests in memory)
+let currentKeyIndex = 0;
+
+// Track alerted keys per session (resets on server restart)
+const alertedKeys = new Set();
+
+// Helper function to wait/delay
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function callGeminiAPI(prompt, keyIndex = currentKeyIndex, attemptedInCycle = 0) {
+  // If we've tried all keys in this cycle, wait and retry from the beginning
+  if (attemptedInCycle >= keys.length) {
+    console.log(`⏳ All ${keys.length} keys exhausted. Waiting 5 seconds before retrying...`);
+    await delay(5000);
+    attemptedInCycle = 0; // Reset cycle counter
+    keyIndex = 0; // Start from first key again
   }
 
   const key = keys[keyIndex];
-  console.log(`🔁 Trying Gemini key #${keyIndex + 1}`);
+  const keyNumber = keyIndex + 1;
+  console.log(`🔑 Using Gemini API Key #${keyNumber} (Attempt ${attemptedInCycle + 1}/${keys.length})`);
 
-  // Add timeout protection (25 seconds - well under Vercel's 30s limit)
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 8000);
 
   try {
     const res = await axios.post(
@@ -50,34 +63,53 @@ async function callGeminiAPI(prompt, keyIndex = 0) {
     );
 
     clearTimeout(timeout);
-    console.log("✅ Gemini response received");
+    console.log(`✅ Success with Key #${keyNumber}`);
+    
+    // Update current key index for next request
+    currentKeyIndex = keyIndex;
+    
     return res.data;
   } catch (err) {
-    clearTimeout(timeout); // Always clear timeout on error
+    clearTimeout(timeout);
     
     if (err.name === 'AbortError' || err.code === 'ECONNABORTED') {
-      console.error(`❌ Request timeout for key #${keyIndex + 1}`);
-      return callGeminiAPI(prompt, keyIndex + 1);
+      console.error(`❌ Timeout on Key #${keyNumber}`);
+      // Move to next key
+      const nextKeyIndex = (keyIndex + 1) % keys.length;
+      currentKeyIndex = nextKeyIndex;
+      return callGeminiAPI(prompt, nextKeyIndex, attemptedInCycle + 1);
     }
 
     if (err.response) {
       const status = err.response.status;
-      console.error(`❌ Error ${status}:`, err.response.data);
+      const errorMsg = err.response.data?.error?.message || JSON.stringify(err.response.data);
+      
+      console.error(`❌ Key #${keyNumber} failed with status ${status}: ${errorMsg}`);
 
-      // Retry on all retryable status codes
+      // Check if it's a rate limit or server error
       if (RETRYABLE_STATUS_CODES.includes(status)) {
-        const keyNumber = keyIndex + 1;
+        // Send alert email for keys 5, 8, 10 (only once per session)
         if ([5, 8, 10].includes(keyNumber) && !alertedKeys.has(keyNumber)) {
-          await sendAlert(keyNumber);
+          console.log(`📧 Sending alert for Key #${keyNumber}...`);
           alertedKeys.add(keyNumber);
+          sendAlert(keyNumber).catch(e => console.error('Email alert failed:', e.message));
         }
-        console.warn(`Key ${keyNumber} failed with ${status}, retrying...`);
-        return callGeminiAPI(prompt, keyIndex + 1);
+        
+        // Move to next key
+        const nextKeyIndex = (keyIndex + 1) % keys.length;
+        currentKeyIndex = nextKeyIndex;
+        console.warn(`⏭️ Switching to Key #${(nextKeyIndex + 1)}...`);
+        
+        return callGeminiAPI(prompt, nextKeyIndex, attemptedInCycle + 1);
       }
-    } else {
-      console.error("❌ Network or unknown error:", err.message);
+      
+      // Non-retryable error (e.g., 400 Bad Request, 401 Unauthorized)
+      console.error(`❌ Non-retryable error with Key #${keyNumber}`);
+      throw new Error(`Gemini API error ${status}: ${errorMsg}`);
     }
 
+    // Network or unknown error
+    console.error(`❌ Network error with Key #${keyNumber}:`, err.message);
     throw err;
   }
 }
@@ -107,9 +139,6 @@ app.post('/generate', async (req, res) => {
 app.get('/', (req, res) => {
   res.send('✅ Gemini Prompt Server is running. Use POST /generate to interact.');
 });
-
-// 📞 n8n to Retell webhook endpoint
-app.post('/n8n/retell/call', n8nRetellWebhookHandler);
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
